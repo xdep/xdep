@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Honeypot — inbound activity</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fbfbfa; --fg:#16150f; --muted:#6b6a63;
+          --line:#e0dfd8; --card:#fff; --accent:#b3441d; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141412; --fg:#f0efe9; --muted:#9a998f; --line:#2b2b27;
+            --card:#1c1c19; --accent:#e08a5f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:2rem 1.25rem 4rem; background:var(--bg); color:var(--fg);
+         font:15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size:1.5rem; margin:0 0 .25rem; }
+  .sub { color:var(--muted); margin:0 0 2rem; }
+  h2 { font-size:1rem; text-transform:uppercase; letter-spacing:.06em;
+       color:var(--muted); margin:2.5rem 0 .75rem; }
+  .tiles { display:grid; gap:.75rem; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:1rem; }
+  .tile .n { font-size:1.9rem; font-weight:600; font-variant-numeric:tabular-nums; }
+  .tile .l { color:var(--muted); font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; }
+  .scroll { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--card); }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th, td { text-align:left; padding:.6rem .8rem; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
+  tr:last-child td { border-bottom:none; }
+  td.wrap-cell { white-space:normal; min-width:22rem; color:var(--muted); }
+  .tag { display:inline-block; padding:.1rem .5rem; border-radius:999px;
+         background:color-mix(in srgb, var(--accent) 15%, transparent);
+         color:var(--accent); font-size:.78rem; font-weight:600; }
+  .bar { height:6px; border-radius:3px; background:var(--accent); min-width:2px; }
+  .empty { color:var(--muted); padding:1.25rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Inbound activity</h1>
+  <p class="sub">Calls and messages reaching the honeypot lines, by seeding channel and scam category.</p>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Seeding channels</h2>
+  <div class="scroll"><table id="channels"></table></div>
+
+  <h2>Categories</h2>
+  <div class="scroll"><table id="categories"></table></div>
+
+  <h2>Recent calls</h2>
+  <div class="scroll"><table id="calls"></table></div>
+</div>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num = (n) => (n ?? 0).toLocaleString();
+
+function table(el, cols, rows, empty) {
+  if (!rows.length) { el.outerHTML = `<table id="${el.id}"></table>`; 
+    document.getElementById(el.id).innerHTML = `<tr><td class="empty">${esc(empty)}</td></tr>`; return; }
+  el.innerHTML =
+    "<thead><tr>" + cols.map(c => `<th>${esc(c.label)}</th>`).join("") + "</tr></thead>" +
+    "<tbody>" + rows.map(r => "<tr>" + cols.map(c => `<td class="${c.cls || ''}">${c.render(r)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+}
+
+async function load() {
+  const [stats, channels, calls] = await Promise.all([
+    fetch("/api/stats").then(r => r.json()),
+    fetch("/api/channels").then(r => r.json()),
+    fetch("/api/calls?limit=100").then(r => r.json()),
+  ]);
+
+  document.getElementById("tiles").innerHTML = [
+    ["Calls received", stats.total_calls],
+    ["Unique callers", stats.unique_callers],
+    ["Repeat callers", stats.repeat_callers],
+    ["Texts received", stats.total_messages],
+    ["Transcribed", stats.transcribed_calls],
+  ].map(([l, n]) => `<div class="tile"><div class="n">${num(n)}</div><div class="l">${esc(l)}</div></div>`).join("");
+
+  table(document.getElementById("channels"), [
+    { label: "Channel", render: r => `<strong>${esc(r.slug)}</strong>` },
+    { label: "Kind", render: r => esc(r.kind) },
+    { label: "Number", render: r => `<code>${esc(r.did)}</code>` },
+    { label: "Calls", render: r => num(r.calls) },
+    { label: "Unique callers", render: r => num(r.unique_callers) },
+    { label: "Hours to 1st call", render: r => r.hours_to_first_call ?? "—" },
+  ], channels, "No channels registered yet — run `python -m honeypot channel add`.");
+
+  const max = Math.max(1, ...(stats.by_category || []).map(c => c.n));
+  table(document.getElementById("categories"), [
+    { label: "Category", render: r => `<span class="tag">${esc(r.category)}</span>` },
+    { label: "Calls", render: r => num(r.n) },
+    { label: "", render: r => `<div class="bar" style="width:${(r.n / max * 220).toFixed(0)}px"></div>` },
+    { label: "Avg confidence", render: r => (r.avg_confidence ?? 0).toFixed(2) },
+  ], stats.by_category || [], "Nothing classified yet.");
+
+  table(document.getElementById("calls"), [
+    { label: "When", render: r => esc((r.started_at || "").replace("T", " ").replace("+00:00", "Z")) },
+    { label: "From", render: r => `<code>${esc(r.from_number)}</code>` },
+    { label: "Channel", render: r => esc(r.channel || "—") },
+    { label: "Secs", render: r => r.duration_s ?? "—" },
+    { label: "Category", render: r => r.category ? `<span class="tag">${esc(r.category)}</span>` : "—" },
+    { label: "Summary", cls: "wrap-cell", render: r => esc(r.summary || r.transcript || "") },
+  ], calls, "No calls logged yet.");
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
